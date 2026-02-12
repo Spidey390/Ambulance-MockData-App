@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from "react";
 import { Activity, Heart, MapPin, Play, Square, User, Truck, RefreshCw, Trash2, Plus, Wind } from "lucide-react";
-const GET_URL = "https://ambulance-monitoring.onrender.com/api/ambulance/status/api/ambulance/status";
-const UPDATE_URL = "https://ambulance-monitoring.onrender.com/api/ambulance/status/api/ambulance/update";
-const ADD_URL = "https://ambulance-monitoring.onrender.com/api/ambulance/status/api/ambulance/add";
-const DELETE_URL = "https://ambulance-monitoring.onrender.com/api/ambulance/status/api/ambulance/delete";
+const BASE_URL = "https://ambulance-monitoring.onrender.com";
+const GET_URL = `${BASE_URL}/api/ambulance/status`;
+const UPDATE_URL = `${BASE_URL}/api/ambulance/update`;
+const ADD_URL = `${BASE_URL}/api/ambulance/add`;
+const DELETE_URL = `${BASE_URL}/api/ambulance/delete`;
 const scrollbarStyles = `
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-track { background: #F3F4F6; }
