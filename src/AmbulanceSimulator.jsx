@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from "react";
 import { Activity, Heart, MapPin, Play, Square, User, Truck, RefreshCw, Trash2, Plus, Wind } from "lucide-react";
-const BASE_URL = "https://ambulance-monitoring.onrender.com";
-const GET_URL = `${BASE_URL}/api/ambulance/status`;
-const UPDATE_URL = `${BASE_URL}/api/ambulance/update`;
-const ADD_URL = `${BASE_URL}/api/ambulance/add`;
-const DELETE_URL = `${BASE_URL}/api/ambulance/delete`;
+const GET_URL = "http://localhost:3000/api/ambulance/status";
+const UPDATE_URL = "http://localhost:3000/api/ambulance/update";
+const ADD_URL = "http://localhost:3000/api/ambulance/add";
+const DELETE_URL = "http://localhost:3000/api/ambulance/delete";
 const scrollbarStyles = `
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-track { background: #F3F4F6; }
@@ -64,163 +63,379 @@ export default function AmbulanceSimulator() {
         !isOnboard ? { heartRate: 0, spo2: 0 } :
             { heartRate: Math.floor(70 + Math.random() * 30), spo2: Math.floor(95 + Math.random() * 5) };
     useEffect(() => {
+        if (!isSimulating) return;
         const interval = setInterval(() => {
-            Object.keys(activeSims).forEach(async (id) => {
-                if (!activeSims[id]) return;
-                const amb = ambulances.find(a => (a.vehicleId || a.ambulanceId) === id);
-                if (!amb) return;
-                const newLoc = moveAmbulance(amb.location.latitude, amb.location.longitude);
-                const newVitals = getVitals(amb.patient.isOnboard);
-                await fetch(UPDATE_URL, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        ambulanceId: id,
-                        hasPatient: amb.patient.isOnboard,
-                        heartRate: newVitals.heartRate,
-                        spo2: newVitals.spo2,
-                        latitude: newLoc.latitude,
-                        longitude: newLoc.longitude
-                    })
-                });
-                setAmbulances(prev => prev.map(a =>
-                    (a.vehicleId || a.ambulanceId) === id
-                        ? { ...a, location: newLoc, patient: { ...a.patient, vitals: { heartRate: newVitals.heartRate, spO2: newVitals.spo2 } } }
-                        : a
-                ));
+            const updates = {};
+            const timestamp = Date.now();
+            Object.values(ambulances).forEach((amb) => {
+                if (!amb.isRunning) return;
+                let { latitude, longitude, heartRate, spo2, isEmergency, ambulanceId } = amb;
+
+                latitude += (Math.random() - 0.5) * 0.001;
+                longitude += (Math.random() - 0.5) * 0.001;
+
+                if (isEmergency) {
+                    heartRate = 60 + Math.floor(Math.random() * 40);
+                    spo2 = 94 + Math.floor(Math.random() * 6);
+                } else {
+                    heartRate = 0;
+                    spo2 = 0;
+                }
+
+                updates[`ambulances/${ambulanceId}`] = {
+                    ...amb, latitude, longitude, heartRate, spo2,
+                    hasPatient: isEmergency, timestamp
+                };
             });
-        }, 2000);
+            if (Object.keys(updates).length > 0) update(ref(db), updates);
+        }, 1000);
         return () => clearInterval(interval);
-    }, [activeSims, ambulances]);
-    const toggleSimulation = async (id) => {
-        const willStop = activeSims[id];
-        if (willStop) {
-            // Stopping simulation, automatically unload patient if onboard
-            const amb = ambulances.find(a => (a.vehicleId || a.ambulanceId) === id);
-            if (amb && amb.patient.isOnboard) {
-                await togglePatient(amb);
-            }
-        }
-        setActiveSims(prev => ({ ...prev, [id]: !prev[id] }));
+    }, [ambulances, isSimulating]);
+
+    const deployAmbulance = () => {
+        if (!newId) return;
+        const loc = getRandomLocation();
+        const newAmb = {
+            ambulanceId: newId,
+            latitude: loc.lat,
+            longitude: loc.lng,
+            heartRate: 0,
+            spo2: 0,
+            hasPatient: false,
+            isRunning: false,
+            isEmergency: false,
+            timestamp: Date.now()
+        };
+        update(ref(db, `ambulances/${newId}`), newAmb);
+        const num = parseInt(newId.split('_')[1] || "0") + 1;
+        setNewId(`AMB_${String(num).padStart(3, '0')}`);
     };
-    const togglePatient = async (amb) => {
-        const id = amb.vehicleId || amb.ambulanceId;
-        const isRunning = activeSims[id];
-        const newState = !amb.patient.isOnboard;
-        if (newState && !isRunning) {
-            alert("Cannot load patient while the ambulance is IDLE.");
-            return;
+
+    const removeAmbulance = (id) => remove(ref(db, `ambulances/${id}`));
+
+    const handleStartStop = (id) => {
+        const amb = ambulances[id];
+        if (amb.isRunning) {
+            update(ref(db, `ambulances/${id}`), { isRunning: false, isEmergency: false });
+        } else {
+            update(ref(db, `ambulances/${id}`), { isRunning: true, isEmergency: false });
         }
-        try {
-            await fetch(UPDATE_URL, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    ambulanceId: id,
-                    hasPatient: newState,
-                    heartRate: amb.patient.vitals?.heartRate || 0,
-                    spo2: amb.patient.vitals?.spO2 || 0,
-                    latitude: amb.location.latitude,
-                    longitude: amb.location.longitude
-                })
-            });
-        } catch (err) {
-            console.error("Update failed", err);
-            return;
-        }
-        setAmbulances(prev => prev.map(a =>
-            (a.vehicleId || a.ambulanceId) === id
-                ? { ...a, patient: { ...a.patient, isOnboard: newState } }
-                : a
-        ));
     };
+
+    const handleEmergency = (id) => {
+        const amb = ambulances[id];
+        if (amb.isEmergency) {
+            update(ref(db, `ambulances/${id}`), { isEmergency: false });
+        } else {
+            update(ref(db, `ambulances/${id}`), { isEmergency: true, isRunning: true });
+        }
+    };
+
+    // --- UI SECTION ---
     return (
-        <div style={styles.container}>
-            <style>{scrollbarStyles}</style>
+        <div style={styles.appContainer}>
+            <style>{`
+        body, html { margin: 0; padding: 0; overflow: hidden; height: 100%; font-family: 'Inter', sans-serif; background-color: #F9FAFB; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+      `}</style>
+
+            {/* Fixed Header */}
             <div style={styles.header}>
-                <div style={styles.headerLeft}>
-                    <Activity size={32} color="#EF4444" />
-                    <h1 style={styles.brandTitle}>Fleet Simulator</h1>
+                <div style={styles.brandSection}>
+                    <div style={styles.logoBox}>
+                        <Activity color="#EF4444" size={28} />
+                    </div>
+                    <h1 style={styles.title}>Fleet Simulator</h1>
                 </div>
-                <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+
+                <div style={styles.controlSection}>
                     <input
-                        placeholder="e.g. AMB_101"
-                        value={newAmbId}
-                        onChange={(e) => setNewAmbId(e.target.value)}
                         style={styles.input}
+                        value={newId}
+                        onChange={(e) => setNewId(e.target.value)}
+                        placeholder="ID (e.g. AMB_101)"
                     />
-                    <button onClick={addAmbulance} style={styles.addBtn}>
-                        <Plus size={18} /> <span>Deploy</span>
+                    <button style={styles.deployBtn} onClick={deployAmbulance}>
+                        <Plus size={18} /> <span style={styles.btnText}>Deploy</span>
                     </button>
-                    <button onClick={fetchAmbulances} style={styles.refreshBtn}>
-                        <RefreshCw size={18} color="#4B5563" />
+                    <button style={styles.refreshBtn} onClick={() => window.location.reload()}>
+                        <RefreshCw size={18} />
                     </button>
                 </div>
             </div>
-            <div style={styles.grid}>
-                {ambulances.map((amb) => {
-                    const id = amb.vehicleId || amb.ambulanceId;
-                    const isSimulating = activeSims[id];
-                    const isPatient = amb.patient.isOnboard;
-                    return (
-                        <div key={id} style={styles.card}>
-                            <button onClick={() => deleteAmbulance(id)} style={styles.deleteBtn}>
-                                <Trash2 size={16} color="#EF4444" />
-                            </button>
+
+            {/* Scrollable Grid Area */}
+            <div style={styles.contentArea}>
+                <div style={styles.grid}>
+                    {Object.values(ambulances).sort((a, b) => a.ambulanceId.localeCompare(b.ambulanceId)).map((amb) => (
+                        <div key={amb.ambulanceId} style={{ ...styles.card, opacity: amb.isRunning ? 1 : 0.85, borderColor: amb.isEmergency ? '#FECACA' : '#F3F4F6' }}>
+
+                            {/* Card Header */}
                             <div style={styles.cardHeader}>
-                                <span style={styles.itemId}>{id}</span>
-                                <div style={{ ...styles.statusBadge, backgroundColor: isSimulating ? "#DCFCE7" : "#F3F4F6", color: isSimulating ? "#166534" : "#4B5563" }}>
-                                    {isSimulating ? "MOVING" : "STATIONARY"}
+                                <div>
+                                    <div style={styles.idText}>{amb.ambulanceId}</div>
+                                    <div style={styles.coordText}>
+                                        {amb.latitude?.toFixed(4)}, {amb.longitude?.toFixed(4)}
+                                    </div>
+                                </div>
+                                <div style={styles.statusCol}>
+                                    <span style={{
+                                        ...styles.badge,
+                                        backgroundColor: !amb.isRunning ? '#F1F5F9' : (amb.isEmergency ? '#FEF2F2' : '#ECFDF5'),
+                                        color: !amb.isRunning ? '#64748B' : (amb.isEmergency ? '#991B1B' : '#047857')
+                                    }}>
+                                        {!amb.isRunning ? 'OFFLINE' : (amb.isEmergency ? 'EMERGENCY' : 'ONLINE')}
+                                    </span>
+                                    <button style={styles.deleteIcon} onClick={() => removeAmbulance(amb.ambulanceId)}>
+                                        <Trash2 size={16} />
+                                    </button>
                                 </div>
                             </div>
-                            <div style={styles.locationBox}>
-                                <MapPin size={14} color="#6B7280" />
-                                <span style={styles.locationText}>{amb.location.latitude.toFixed(4)}, {amb.location.longitude.toFixed(4)}</span>
-                            </div>
-                            <div style={styles.vitalsRow}>
-                                <div style={styles.miniVital}>
-                                    <Heart size={14} color="#EF4444" />
-                                    <span>{amb.patient.vitals?.heartRate || 0}</span>
+
+                            {/* Vitals Data */}
+                            <div style={styles.vitalsBox}>
+                                <div style={styles.vitalGroup}>
+                                    <Heart size={18} fill={amb.isEmergency ? "#EF4444" : "none"} color={amb.isEmergency ? "#EF4444" : "#94A3B8"} />
+                                    <span style={{ ...styles.vitalNum, color: amb.isEmergency ? "#0F172A" : "#94A3B8" }}>
+                                        {amb.isEmergency ? amb.heartRate : '--'} <span style={styles.unit}>bpm</span>
+                                    </span>
                                 </div>
-                                <div style={styles.miniVital}>
-                                    <Wind size={14} color="#22C55E" />
-                                    <span>{amb.patient.vitals?.spO2 || 0}%</span>
+                                <div style={styles.vitalGroup}>
+                                    <Wind size={18} color={amb.isEmergency ? "#10B981" : "#94A3B8"} />
+                                    <span style={{ ...styles.vitalNum, color: amb.isEmergency ? "#0F172A" : "#94A3B8" }}>
+                                        {amb.isEmergency ? amb.spo2 : '--'} <span style={styles.unit}>%</span>
+                                    </span>
                                 </div>
                             </div>
-                            <div style={styles.cardFooter}>
-                                <button onClick={() => togglePatient(amb)} style={{ ...styles.actionBtn, backgroundColor: isPatient ? "#FEE2E2" : "#F3F4F6", color: isPatient ? "#991B1B" : "#111827" }}>
-                                    <User size={16} /> {isPatient ? "Unload" : "Load"}
+
+                            {/* Action Buttons */}
+                            <div style={styles.footer}>
+                                <button
+                                    onClick={() => handleStartStop(amb.ambulanceId)}
+                                    style={{
+                                        ...styles.actionBtn,
+                                        backgroundColor: amb.isRunning ? '#1E293B' : '#0F172A',
+                                        flex: 1
+                                    }}
+                                >
+                                    {amb.isRunning ? <Square size={16} fill="white" /> : <Play size={16} fill="white" />}
+                                    {amb.isRunning ? 'Stop' : 'Start'}
                                 </button>
-                                <button onClick={() => toggleSimulation(id)} style={{ ...styles.actionBtn, backgroundColor: isSimulating ? "#2D2F54" : "#111827", color: "white" }}>
-                                    {isSimulating ? <Square size={16} /> : <Play size={16} />}
-                                    {isSimulating ? "Stop" : "Drive"}
+
+                                <button
+                                    onClick={() => handleEmergency(amb.ambulanceId)}
+                                    style={{
+                                        ...styles.actionBtn,
+                                        backgroundColor: amb.isEmergency ? '#EF4444' : '#F1F5F9',
+                                        color: amb.isEmergency ? 'white' : '#475569',
+                                        flex: 1.2
+                                    }}
+                                >
+                                    <Siren size={18} />
+                                    {amb.isEmergency ? 'Emergency' : 'Emergency'}
                                 </button>
                             </div>
+
                         </div>
-                    );
-                })}
+                    ))}
+                </div>
             </div>
         </div>
     );
 }
+
 const styles = {
-    container: { width: "100vw", boxSizing: "border-box", padding: "40px", backgroundColor: "#F9FAFB", minHeight: "100vh", fontFamily: "'Inter', sans-serif" },
-    header: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "32px", backgroundColor: "white", padding: "20px 30px", borderRadius: "16px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)", border: "1px solid #E5E7EB" },
-    headerLeft: { display: "flex", alignItems: "center", gap: "12px" },
-    brandTitle: { fontSize: "24px", fontWeight: "800", color: "#111827", margin: 0 },
-    input: { padding: "10px 16px", borderRadius: "8px", border: "1px solid #E5E7EB", backgroundColor: "#F9FAFB", fontSize: "14px", outline: "none", width: "180px" },
-    addBtn: { display: "flex", alignItems: "center", gap: "8px", padding: "10px 20px", background: "#111827", color: "white", borderRadius: "8px", border: "none", cursor: "pointer", fontWeight: "600", fontSize: "14px", transition: "opacity 0.2s" },
-    refreshBtn: { padding: "10px", background: "white", borderRadius: "8px", border: "1px solid #E5E7EB", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
-    grid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "24px" },
-    card: { backgroundColor: "white", padding: "24px", borderRadius: "16px", boxShadow: "0 4px 6px -1px rgba(0,0,0,0.05)", border: "1px solid #E5E7EB", position: "relative", transition: "transform 0.2s" },
-    cardHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" },
-    itemId: { fontSize: "18px", fontWeight: "700", color: "#111827" },
-    statusBadge: { padding: "4px 10px", borderRadius: "20px", fontSize: "11px", fontWeight: "700" },
-    locationBox: { display: "flex", alignItems: "center", gap: "6px", marginBottom: "16px" },
-    locationText: { fontSize: "13px", color: "#6B7280", fontWeight: "500" },
-    vitalsRow: { display: "flex", gap: "12px", marginBottom: "20px", padding: "12px", backgroundColor: "#F9FAFB", borderRadius: "10px" },
-    miniVital: { display: "flex", alignItems: "center", gap: "6px", fontSize: "14px", fontWeight: "700", color: "#374151" },
-    cardFooter: { display: "flex", gap: "10px" },
-    actionBtn: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", padding: "10px", borderRadius: "8px", border: "none", cursor: "pointer", fontWeight: "600", fontSize: "13px" },
-    deleteBtn: { position: "absolute", top: "-10px", right: "-10px", backgroundColor: "white", border: "1px solid #FEE2E2", padding: "8px", borderRadius: "50%", cursor: "pointer", boxShadow: "0 2px 4px rgba(0,0,0,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }
+    appContainer: {
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100vh',
+        width: '100vw',
+        backgroundColor: '#F8FAFC',
+        overflow: 'hidden', // Prevents double scrollbars
+    },
+    header: {
+        display: 'flex',
+        flexWrap: 'wrap', // Responsive wrapping
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        padding: '16px 24px',
+        backgroundColor: '#FFFFFF',
+        borderBottom: '1px solid #E2E8F0',
+        gap: '16px',
+        zIndex: 10,
+        boxShadow: '0 2px 4px rgba(0,0,0,0.02)'
+    },
+    brandSection: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '12px'
+    },
+    logoBox: {
+        backgroundColor: '#FEF2F2',
+        padding: '8px',
+        borderRadius: '10px'
+    },
+    title: {
+        fontSize: '22px',
+        fontWeight: '800',
+        color: '#0F172A',
+        margin: 0,
+        letterSpacing: '-0.5px'
+    },
+    controlSection: {
+        display: 'flex',
+        gap: '10px',
+        flexWrap: 'wrap', // Allows buttons to drop to next line on mobile
+    },
+    input: {
+        padding: '0 16px',
+        height: '42px',
+        borderRadius: '8px',
+        border: '1px solid #E2E8F0',
+        fontSize: '14px',
+        width: '180px', // Fixed width for cleaner look
+        outline: 'none',
+        backgroundColor: '#F8FAFC',
+        color: '#0F172A'
+    },
+    deployBtn: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        height: '42px',
+        padding: '0 20px',
+        backgroundColor: '#0F172A',
+        color: 'white',
+        border: 'none',
+        borderRadius: '8px',
+        fontSize: '14px',
+        fontWeight: '600',
+        cursor: 'pointer',
+        transition: 'background 0.2s',
+        whiteSpace: 'nowrap'
+    },
+    refreshBtn: {
+        height: '42px',
+        width: '42px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: '#FFFFFF',
+        border: '1px solid #E2E8F0',
+        borderRadius: '8px',
+        cursor: 'pointer',
+        color: '#64748B'
+    },
+    btnText: {
+        display: 'inline-block' // Ensures text doesn't collapse oddly
+    },
+    contentArea: {
+        flex: 1, // Takes remaining height
+        overflowY: 'auto', // Internal scroll
+        padding: '24px',
+    },
+    grid: {
+        display: 'grid',
+        // Responsive columns: Minimum 300px wide, fills available space
+        gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+        gap: '20px',
+        maxWidth: '1600px', // Prevents it from getting too stretched on 4k monitors
+        margin: '0 auto'
+    },
+    card: {
+        backgroundColor: 'white',
+        borderRadius: '16px',
+        padding: '20px',
+        border: '1px solid #E2E8F0',
+        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '16px',
+        transition: 'all 0.3s ease'
+    },
+    cardHeader: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'flex-start'
+    },
+    idText: {
+        fontSize: '18px',
+        fontWeight: '700',
+        color: '#0F172A'
+    },
+    coordText: {
+        fontSize: '12px',
+        color: '#64748B',
+        marginTop: '4px',
+        fontFamily: 'monospace'
+    },
+    statusCol: {
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'flex-end',
+        gap: '8px'
+    },
+    badge: {
+        fontSize: '11px',
+        fontWeight: '700',
+        padding: '4px 8px',
+        borderRadius: '20px',
+        letterSpacing: '0.5px'
+    },
+    deleteIcon: {
+        background: 'none',
+        border: 'none',
+        cursor: 'pointer',
+        color: '#EF4444',
+        padding: '4px',
+        opacity: 0.6,
+        transition: 'opacity 0.2s'
+    },
+    vitalsBox: {
+        backgroundColor: '#F8FAFC',
+        borderRadius: '12px',
+        padding: '16px',
+        display: 'flex',
+        justifyContent: 'space-around', // Even spacing
+        alignItems: 'center'
+    },
+    vitalGroup: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px'
+    },
+    vitalNum: {
+        fontSize: '16px',
+        fontWeight: '700',
+        display: 'flex',
+        alignItems: 'baseline',
+        gap: '2px'
+    },
+    unit: {
+        fontSize: '11px',
+        color: '#94A3B8',
+        fontWeight: '500'
+    },
+    footer: {
+        display: 'flex',
+        gap: '12px',
+        marginTop: 'auto' // Pushes buttons to bottom if card height varies
+    },
+    actionBtn: {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '8px',
+        padding: '10px 16px',
+        borderRadius: '8px',
+        border: 'none',
+        fontWeight: '600',
+        fontSize: '14px',
+        cursor: 'pointer',
+        transition: 'all 0.2s',
+        color: 'white'
+    }
 };
